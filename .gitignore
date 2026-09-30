@@ -1,0 +1,8 @@
+# 개인 건강 데이터와 그로부터 만든 시간별 결과는 공개 저장소에 올리지 않는다
+data/
+outputs/
+*.csv
+
+__pycache__/
+.pytest_cache/
+*.pyc
