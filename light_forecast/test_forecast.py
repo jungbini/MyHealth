@@ -80,6 +80,19 @@ def test_baselines():
         assert pred.loc[h, "B1_yesterday"] == pytest.approx(window.iloc[-1][h], nan_ok=True)
         assert pred.loc[h, "B2_last_week"] == pytest.approx(window.iloc[0][h], nan_ok=True)
         assert pred.loc[h, "B3_median7"] == pytest.approx(window[h].median(), nan_ok=True)
+        # 평일은 어제 값, 휴일(토·일)은 지난주 같은 요일 값
+        expected = window.iloc[0][h] if target.weekday() >= 5 else window.iloc[-1][h]
+        assert pred.loc[h, "B4_daytype"] == pytest.approx(expected, nan_ok=True)
+
+
+@pytest.mark.parametrize("offset", range(7))
+def test_daytype_reference_by_weekday(offset):
+    hourly = synthetic_hourly(missing=0.0)
+    X = build_features(hourly).set_index(["date", "hour"])
+    d = pd.Timestamp("2026-01-19") + pd.Timedelta(days=offset)
+    k = 7 if d.weekday() >= 5 else 1
+    assert X.loc[(d, 8), "is_weekend"] == float(d.weekday() >= 5)
+    assert X.loc[(d, 8), "daytype_ref"] == pytest.approx(hourly.loc[d - pd.Timedelta(days=k), 8])
 
 
 def test_forecast_uses_only_observations_before_target():

@@ -50,15 +50,21 @@ SEG_COLS = [f"seg_{name}" for name in SEGMENTS]
 NUMERIC_COLS = LAG_COLS + ["hist_mean", "hist_std"] + SEG_COLS
 CALENDAR_COLS = ["hour", "weekday"]
 LGBM_COLS = NUMERIC_COLS + CALENDAR_COLS
+# 평일/휴일 구분: 평일은 어제(D-1), 휴일(토·일)은 지난주 같은 요일(D-7)을 기준값으로 쓴다
+WEEKEND = (5, 6)
+DAYTYPE_COLS = ["is_weekend", "daytype_ref"]
 
-BASELINES = ["B1_yesterday", "B2_last_week", "B3_median7"]
-LEARNERS = ["Ridge", "LightGBM"]
+BASELINES = ["B1_yesterday", "B2_last_week", "B3_median7", "B4_daytype"]
+LEARNERS = ["Ridge", "LightGBM", "Ridge_daytype", "LightGBM_daytype"]
 MODELS = BASELINES + LEARNERS
 REFERENCE = "B3_median7"  # 모든 평가 시각에서 예측 가능한 단순 모델
 # 부트스트랩으로 차이를 검정할 (model, reference) 쌍. 두 모델이 모두 예측한 시각에서 비교한다.
 COMPARISONS = [(m, REFERENCE) for m in MODELS if m != REFERENCE] + [
     ("Ridge", "B1_yesterday"),
     ("LightGBM", "B1_yesterday"),
+    ("B4_daytype", "B1_yesterday"),
+    ("Ridge_daytype", "Ridge"),
+    ("LightGBM_daytype", "LightGBM"),
 ]
 
 # 평가 구간 결과를 보고 고르지 않도록, 작은 표본에 맞춘 보수적인 값으로 미리 고정
@@ -136,6 +142,8 @@ def build_features(visible: pd.DataFrame) -> pd.DataFrame:
     index = pd.MultiIndex.from_product([visible.index, HOURS], names=["date", "hour"])
     X = pd.DataFrame(features, index=index).reset_index()
     X["weekday"] = X["date"].dt.weekday
+    X["is_weekend"] = X["weekday"].isin(WEEKEND).astype(float)
+    X["daytype_ref"] = X["lag_1"].where(X["is_weekend"] == 0, X["lag_7"])
     return X
 
 
@@ -143,28 +151,41 @@ def build_features(visible: pd.DataFrame) -> pd.DataFrame:
 # 모델
 # ---------------------------------------------------------------------------
 def baseline_predictions(X: pd.DataFrame) -> pd.DataFrame:
-    """단순 대체 모델 3종. 필요한 과거 값이 없으면 NaN(예측 불가)으로 둔다."""
+    """단순 대체 모델. 필요한 과거 값이 없으면 NaN(예측 불가)으로 둔다.
+
+    B4_daytype은 평일이면 어제 값, 휴일(토·일)이면 지난주 같은 요일 값이다.
+    """
     return pd.DataFrame(
         {
             "B1_yesterday": X["lag_1"],
             "B2_last_week": X["lag_7"],
             "B3_median7": X[LAG_COLS].median(axis=1, skipna=True),
+            "B4_daytype": X["daytype_ref"],
         },
         index=X.index,
     )
 
 
-def ridge_inputs(X: pd.DataFrame) -> pd.DataFrame:
+def _ref_cols(daytype: bool) -> list[str]:
+    """결측을 hist_mean으로 채우고 결측 지시변수를 붙일 기준값 열."""
+    return LAG_COLS + (["daytype_ref"] if daytype else [])
+
+
+def ridge_inputs(X: pd.DataFrame, daytype: bool = False) -> pd.DataFrame:
     """Ridge용 입력: 빈 lag는 같은 시각의 과거 평균(hist_mean)으로 채우고 결측 지시변수를 붙인다."""
-    Z = X[NUMERIC_COLS + CALENDAR_COLS].copy()
-    for col in LAG_COLS:
+    Z = X[NUMERIC_COLS + CALENDAR_COLS + (DAYTYPE_COLS if daytype else [])].copy()
+    for col in _ref_cols(daytype):
         Z[f"{col}_missing"] = Z[col].isna().astype(float)
         Z[col] = Z[col].fillna(Z["hist_mean"])
     return Z
 
 
-def make_ridge() -> Pipeline:
-    numeric = NUMERIC_COLS + [f"{col}_missing" for col in LAG_COLS]
+def make_ridge(daytype: bool = False) -> Pipeline:
+    numeric = (
+        NUMERIC_COLS
+        + (DAYTYPE_COLS if daytype else [])
+        + [f"{col}_missing" for col in _ref_cols(daytype)]
+    )
     preprocess = ColumnTransformer(
         [
             (
@@ -191,7 +212,9 @@ def _one_standard_error_rule(cv_results: dict) -> int:
     return int(candidates[np.argmax(alphas[candidates])])
 
 
-def fit_ridge(X_train: pd.DataFrame, y_train: np.ndarray, alpha_rule: str = "min") -> Pipeline:
+def fit_ridge(
+    X_train: pd.DataFrame, y_train: np.ndarray, alpha_rule: str = "min", daytype: bool = False
+) -> Pipeline:
     """alpha는 학습 구간 안에서 날짜 단위 GroupKFold로 고른다.
 
     같은 날의 24개 행은 날짜 단위 피처(lag 결측 패턴, 구간 평균)를 공유하므로 행 단위
@@ -199,13 +222,13 @@ def fit_ridge(X_train: pd.DataFrame, y_train: np.ndarray, alpha_rule: str = "min
     alpha_rule='min'은 CV 오차가 가장 작은 alpha, '1se'는 1-SE 규칙(민감도 분석용).
     """
     search = GridSearchCV(
-        make_ridge(),
+        make_ridge(daytype),
         {"ridge__alpha": RIDGE_ALPHAS},
         cv=GroupKFold(n_splits=RIDGE_CV_FOLDS),
         scoring="neg_mean_squared_error",
         refit=_one_standard_error_rule if alpha_rule == "1se" else True,
     )
-    search.fit(ridge_inputs(X_train), y_train, groups=X_train["date"].to_numpy())
+    search.fit(ridge_inputs(X_train, daytype), y_train, groups=X_train["date"].to_numpy())
     return search.best_estimator_
 
 
@@ -230,13 +253,17 @@ def forecast_day(hourly: pd.DataFrame, target: pd.Timestamp, ridge_alpha_rule: s
     X_test = X[X["date"] == target]
 
     pred = pd.concat([X_test[["date", "hour"]], baseline_predictions(X_test)], axis=1)
-    ridge = fit_ridge(X_train, y_train, ridge_alpha_rule)
-    pred["Ridge"] = ridge.predict(ridge_inputs(X_test))
-    lgbm = lgb.LGBMRegressor(**LGBM_PARAMS).fit(X_train[LGBM_COLS], y_train)
-    pred["LightGBM"] = lgbm.predict(X_test[LGBM_COLS])
+    # 기존 모델과 평일/휴일 구분 모델(_daytype)을 같은 학습 사례로 학습한다
+    for daytype, suffix in ((False, ""), (True, "_daytype")):
+        ridge = fit_ridge(X_train, y_train, ridge_alpha_rule, daytype)
+        pred[f"Ridge{suffix}"] = ridge.predict(ridge_inputs(X_test, daytype))
+        cols = LGBM_COLS + (DAYTYPE_COLS if daytype else [])
+        lgbm = lgb.LGBMRegressor(**LGBM_PARAMS).fit(X_train[cols], y_train)
+        pred[f"LightGBM{suffix}"] = lgbm.predict(X_test[cols])
+        if not daytype:
+            pred["ridge_alpha"] = ridge[-1].alpha
     pred[LEARNERS] = pred[LEARNERS].clip(lower=0)  # log(lux+1) >= 0
     pred["n_train"] = len(y_train)
-    pred["ridge_alpha"] = ridge[-1].alpha
     return pred.reset_index(drop=True)
 
 
@@ -259,32 +286,39 @@ def rolling_origin(
 def evaluation_subsets(pred: pd.DataFrame) -> dict[str, pd.Series]:
     """실측이 있는 시각을 비교 목적에 따라 나눈다.
 
-    common             다섯 모델이 모두 예측 가능한 시각 (다섯 모델 공정 비교)
+    common             모든 모델이 예측 가능한 시각 (모델 공정 비교)
     yesterday_observed 어제 같은 시각 값이 있는 시각 (B1과 학습 모델을 같은 행에서 비교)
     yesterday_missing  어제 값이 없어 B1이 예측할 수 없는 시각
     all                실측이 있는 모든 시각 (각 모델은 예측 가능한 시각만, coverage로 표시)
+    weekday_*/weekend_* 위 common·all을 평일/휴일(토·일)로 나눈 것
     """
     observed = pred["actual"].notna()
     has_yesterday = pred["B1_yesterday"].notna()
+    common = observed & pred[MODELS].notna().all(axis=1)
+    weekend = pred["date"].dt.weekday.isin(WEEKEND)
     return {
-        "common": observed & pred[MODELS].notna().all(axis=1),
+        "common": common,
         "yesterday_observed": observed & has_yesterday,
         "yesterday_missing": observed & ~has_yesterday,
         "all": observed,
+        "weekday_common": common & ~weekend,
+        "weekend_common": common & weekend,
+        "weekday_all": observed & ~weekend,
+        "weekend_all": observed & weekend,
     }
 
 
 def score(pred: pd.DataFrame) -> pd.DataFrame:
     """모델별 MAE·RMSE(log(lux+1) 척도)와 lux 척도 MAE.
 
-    'all' 이외의 부분집합에서는 그 부분집합 전체를 예측할 수 있는 모델만 집계해
+    '...all' 이외의 부분집합에서는 그 부분집합 전체를 예측할 수 있는 모델만 집계해
     모든 모델이 같은 행에서 비교되도록 한다.
     """
     rows = []
     for subset, mask in evaluation_subsets(pred).items():
         for model in MODELS:
             ok = mask & pred[model].notna()
-            if subset != "all" and ok.sum() < mask.sum():
+            if not subset.endswith("all") and ok.sum() < mask.sum():
                 continue
             err = pred.loc[ok, model] - pred.loc[ok, "actual"]
             lux_err = np.expm1(pred.loc[ok, model]) - np.expm1(pred.loc[ok, "actual"])
@@ -416,10 +450,12 @@ def main() -> None:
         m = score(pred)
         m.insert(0, "agg", agg)
         metrics.append(m)
-        for model, reference in COMPARISONS:
-            b = bootstrap_vs_reference(pred, model, reference)
-            b["agg"] = agg
-            boots.append(b)
+        weekend = pred["date"].dt.weekday.isin(WEEKEND)
+        for days, rows in (("all", pred), ("weekday", pred[~weekend]), ("weekend", pred[weekend])):
+            for model, reference in COMPARISONS:
+                b = bootstrap_vs_reference(rows, model, reference)
+                b["agg"], b["days_type"] = agg, days
+                boots.append(b)
         error_by(pred, "hour").to_csv(out / f"mae_by_hour_{agg}.csv")
         error_by(pred, "date").to_csv(out / f"mae_by_date_{agg}.csv")
 
@@ -430,7 +466,7 @@ def main() -> None:
 
     metrics = pd.concat(metrics, ignore_index=True)
     boots = pd.DataFrame(boots)
-    boots = boots[["agg"] + [c for c in boots.columns if c != "agg"]]
+    boots = boots[["agg", "days_type"] + [c for c in boots.columns if c not in ("agg", "days_type")]]
     metrics.to_csv(out / "metrics.csv", index=False)
     boots.to_csv(out / "bootstrap_vs_reference.csv", index=False)
     pd.Series(info).to_csv(out / "data_summary.csv", header=["value"])

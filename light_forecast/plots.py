@@ -19,21 +19,28 @@ MUTED = "#898781"
 GRID = "#e1e0d9"
 BASELINE = "#c3c2b7"
 
-# 모델마다 모든 그림에서 같은 색 (검증된 범주형 팔레트 1~5번 슬롯)
+# 모델마다 모든 그림에서 같은 색 (검증된 범주형 팔레트 1~8번 슬롯)
 COLORS = {
     "Ridge": "#2a78d6",
     "LightGBM": "#eb6834",
     "B3_median7": "#1baf7a",
     "B1_yesterday": "#eda100",
     "B2_last_week": "#e87ba4",
+    "B4_daytype": "#008300",
+    "Ridge_daytype": "#4a3aa7",
+    "LightGBM_daytype": "#e34948",
 }
 LABELS = {
     "B1_yesterday": "B1 yesterday",
     "B2_last_week": "B2 same weekday last week",
     "B3_median7": "B3 7-day median",
+    "B4_daytype": "B4 weekday: yesterday / weekend: last week",
     "Ridge": "Ridge",
     "LightGBM": "LightGBM",
+    "Ridge_daytype": "Ridge + weekday/weekend",
+    "LightGBM_daytype": "LightGBM + weekday/weekend",
 }
+ORIGINAL_MODELS = ["B1_yesterday", "B2_last_week", "B3_median7", "Ridge", "LightGBM"]
 LUX_TICKS = [0, 10, 100, 1000, 10000]
 
 plt.rcParams.update(
@@ -86,10 +93,12 @@ def _hour_axis(ax: plt.Axes) -> None:
     ax.set_xlabel("hour of day")
 
 
-def plot_model_errors(metrics: pd.DataFrame, path: Path, agg: str = "mean") -> None:
-    common = metrics[(metrics["agg"] == agg) & (metrics["subset"] == "common")].set_index("model")
+def plot_model_errors(
+    metrics: pd.DataFrame, path: Path, agg: str = "mean", subset: str = "common", scope: str = ""
+) -> None:
+    common = metrics[(metrics["agg"] == agg) & (metrics["subset"] == subset)].set_index("model")
     n = int(common["n"].iloc[0])
-    fig, axes = plt.subplots(1, 2, figsize=(9.5, 3.4), sharey=True)
+    fig, axes = plt.subplots(1, 2, figsize=(10.5, 4.2), sharey=True)
     order = MODELS[::-1]
     for ax, metric in zip(axes, ["MAE", "RMSE"]):
         values = common.loc[order, metric]
@@ -107,8 +116,7 @@ def plot_model_errors(metrics: pd.DataFrame, path: Path, agg: str = "mean") -> N
         ax.set_title(f"{metric}  (log(lux+1), lower is better)")
         _clean(ax, grid_axis="x")
     fig.suptitle(
-        f"Common evaluation set: {n} hours where all five models can forecast "
-        f"(hourly {agg} of log(lux+1))",
+        f"{scope}{n} hours where every model can forecast (hourly {agg} of log(lux+1))",
         x=0.01,
         ha="left",
         color=INK,
@@ -199,7 +207,7 @@ def plot_example_days(pred: pd.DataFrame, path: Path, n_days: int = 3) -> None:
 def plot_next_day(next_day: pd.DataFrame, path: Path) -> None:
     day = pd.Timestamp(next_day["date"].iloc[0])
     fig, ax = plt.subplots(figsize=(8.5, 3.8))
-    for m in MODELS:
+    for m in ORIGINAL_MODELS:
         ax.plot(next_day["hour"], next_day[m], color=COLORS[m], lw=2, marker="o", ms=3.5, label=LABELS[m])
     _hour_axis(ax)
     _lux_axis(ax)
@@ -215,6 +223,8 @@ def make_all_plots(preds: dict, metrics: pd.DataFrame, next_days: dict, out: Pat
     out.mkdir(parents=True, exist_ok=True)
     plot_model_errors(metrics, out / "fig1_model_errors_common.png", "mean")
     plot_model_errors(metrics, out / "fig1b_model_errors_common_median.png", "median")
+    plot_model_errors(metrics, out / "fig6a_weekday_common.png", "mean", "weekday_common", "Weekdays: ")
+    plot_model_errors(metrics, out / "fig6b_weekend_common.png", "mean", "weekend_common", "Weekends: ")
     plot_error_by_hour(preds["mean"], out / "fig2_mae_by_hour.png")
     plot_error_by_day(preds["mean"], out / "fig3_mae_by_day.png")
     plot_example_days(preds["mean"], out / "fig4_example_days.png")
