@@ -36,6 +36,23 @@ python -m pytest light_forecast            # 테스트
 
 개인 건강 데이터이므로 원본 CSV와 `outputs/`는 저장소에 올리지 않는다(`.gitignore`).
 
+## LightGBM 단독 모델 (`lightgbm_model.py`)
+
+비교 실험 없이 LightGBM 하나로 학습·저장·예측·평가하는 단일 파일이다. 피처와 하이퍼파라미터는
+`forecast.py`의 기본 LightGBM과 같으며, 테스트로 두 코드의 예측이 일치함을 확인한다.
+
+```bash
+# 마지막 관측일까지 전부 학습해 모델 저장 (model.txt + 메타데이터 model.json)
+python light_forecast/lightgbm_model.py train --data lux.csv --model model.txt
+python light_forecast/lightgbm_model.py train --data light_all.xlsx --sheet 116 --model model_116.txt
+
+# 저장된 모델로 0~23시 예측 (기본: 마지막 관측일 다음 날, --date로 지정 가능)
+python light_forecast/lightgbm_model.py predict --data lux.csv --model model.txt --out forecast.csv
+
+# 첫 4주 이후 일 단위 rolling-origin 평가 (매일 전날까지로 다시 학습)
+python light_forecast/lightgbm_model.py evaluate --data lux.csv --out eval.csv
+```
+
 ## 방법
 
 ### 1. 전처리
@@ -229,12 +246,12 @@ python light_forecast/multi_user.py --xlsx path/to/light_all.xlsx --out outputs/
 - 평일·휴일 구분은 학습 모델에서 효과가 거의 없고(LightGBM 차이 +0.003, p=0.62), B4도 B1과
   비슷하다(p=0.17).
 
-### 추가 실험: 일출·일몰 기준 4구간의 7일 평균 (`--segments sun7d`)
+### 추가 실험: 일출·일몰 기준 4구간의 7일 평균 (코드는 제거함)
 
 구간 평균 피처를 "최근 관측일 하루의 06~12/12~18/18~24시 평균"에서 "예측일 직전 7일의
 밤(일출-7시간~일출)·오전(일출~12시)·오후(12시~일몰)·저녁(일몰~다음날 일출-7시간) 평균"으로
-바꿨다. 일출·일몰은 서울 기준으로 날짜마다 계산하고(`solar.py`), 시간 칸은 중앙 시각이 속한
-구간에 넣는다. 20명에 대해 같은 시각(64,443시간)의 Ridge·LightGBM 예측을 비교했다.
+바꿨다. 일출·일몰은 서울 기준으로 날짜마다 계산하고, 시간 칸은 중앙 시각이 속한 구간에 넣었다.
+개선 효과가 없어 코드는 되돌렸다(커밋 d9588cb에서 확인 가능). 20명에 대해 같은 시각(64,443시간)의 Ridge·LightGBM 예측을 비교했다.
 
 | 모델 | MAE 기존 → 4구간 7일 | RMSE 기존 → 4구간 7일 | MAE 개선 사용자 | 사용자별 유의 차이 |
 |---|---|---|---|---|
