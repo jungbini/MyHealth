@@ -229,3 +229,27 @@ def make_all_plots(preds: dict, metrics: pd.DataFrame, next_days: dict, out: Pat
     plot_error_by_day(preds["mean"], out / "fig3_mae_by_day.png")
     plot_example_days(preds["mean"], out / "fig4_example_days.png")
     plot_next_day(next_days["mean"], out / "fig5_next_day_forecast.png")
+
+
+def plot_users(metrics: pd.DataFrame, users: list[str], path: Path, subset: str = "common") -> None:
+    """사용자별 MAE·RMSE 점 그림 (사용자는 B3의 MAE 순으로 정렬)."""
+    models = ["B1_yesterday", "B3_median7", "Ridge", "LightGBM"]
+    m = metrics[(metrics["subset"] == subset) & metrics["user"].isin(users)]
+    order = m[m["model"] == "B3_median7"].sort_values("MAE")["user"].tolist()
+    fig, axes = plt.subplots(1, 2, figsize=(10.5, 0.32 * len(order) + 1.6), sharey=True)
+    for ax, metric in zip(axes, ["MAE", "RMSE"]):
+        wide = m.pivot(index="user", columns="model", values=metric).loc[order]
+        y = np.arange(len(order))
+        ax.hlines(y, wide[models].min(axis=1), wide[models].max(axis=1), color=GRID, lw=1.2, zorder=1)
+        for k in models:
+            ax.scatter(wide[k], y, s=34, color=COLORS[k], edgecolor=SURFACE, linewidth=1.5, label=LABELS[k], zorder=2)
+        ax.set_yticks(y)
+        ax.set_yticklabels([f"user {u}" for u in order])
+        ax.invert_yaxis()
+        ax.set_title(f"{metric}  (log(lux+1), lower is better)")
+        _clean(ax, grid_axis="x")
+    axes[0].legend(loc="lower right", fontsize=7.5, frameon=True, facecolor=SURFACE, edgecolor=GRID)
+    fig.suptitle(f"Per-user rolling-origin errors ({subset} hours per user)", x=0.01, ha="left", color=INK, fontsize=11)
+    fig.tight_layout()
+    fig.savefig(path, dpi=160)
+    plt.close(fig)

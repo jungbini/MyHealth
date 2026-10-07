@@ -31,6 +31,14 @@ from forecast import (
 )
 
 MIN_EVAL_DAYS = 10  # 채점된 평가일이 이보다 적으면 사용자 간 요약에서 제외
+SUMMARY_SUBSETS = (
+    "common",
+    "b3_and_learners",
+    "weekday_common",
+    "weekend_common",
+    "yesterday_observed",
+    "yesterday_missing",
+)
 
 
 def sheet_readings(sheet: pd.DataFrame) -> pd.DataFrame:
@@ -84,8 +92,7 @@ def cross_user_summary(metrics: pd.DataFrame, users: list[str], subset: str) -> 
     wide = m.pivot(index="user", columns="model", values="MAE")
     rows = []
     for model in [c for c in MODELS if c in wide]:
-        paired = wide[[model, REFERENCE]].dropna()
-        diff = paired[model] - paired[REFERENCE]
+        diff = (wide[model] - wide[REFERENCE]).dropna()
         p = wilcoxon(diff).pvalue if model != REFERENCE and (diff != 0).any() else np.nan
         rows.append(
             {
@@ -106,9 +113,13 @@ def main() -> None:
     parser.add_argument("--xlsx", required=True, help="시트별 사용자 조도 엑셀 (timestamp, value 열)")
     parser.add_argument("--out", default="outputs/multi_user")
     parser.add_argument("--workers", type=int, default=4)
+    parser.add_argument("--summary-only", action="store_true", help="저장된 사용자별 결과로 요약만 다시 계산")
     args = parser.parse_args()
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
+    if args.summary_only:
+        summarize(out)
+        return
 
     sheets = pd.read_excel(args.xlsx, sheet_name=None)
     results = []
@@ -123,24 +134,34 @@ def main() -> None:
             print(f"user {i['user']:>4}: {i['status']}, 평가일 {i['eval_days']}, 평가 시각 {i['eval_hours']}", flush=True)
 
     info = pd.DataFrame([r["info"] for r in results]).sort_values("user", key=lambda s: s.astype(int))
-    metrics = pd.concat([r["metrics"] for r in results if "metrics" in r], ignore_index=True)
-    boots = pd.concat([r["boots"] for r in results if "boots" in r], ignore_index=True)
+    pd.concat([r["metrics"] for r in results if "metrics" in r]).to_csv(out / "metrics_by_user.csv", index=False)
+    pd.concat([r["boots"] for r in results if "boots" in r]).to_csv(out / "bootstrap_by_user.csv", index=False)
     info.to_csv(out / "users.csv", index=False)
-    metrics.to_csv(out / "metrics_by_user.csv", index=False)
-    boots.to_csv(out / "bootstrap_by_user.csv", index=False)
+    summarize(out)
 
+
+def summarize(out: Path) -> None:
+    """저장된 사용자별 결과로 사용자 간 요약과 전체 합산 지표를 만든다."""
+    info = pd.read_csv(out / "users.csv", dtype={"user": str})
+    metrics = pd.read_csv(out / "metrics_by_user.csv", dtype={"user": str})
     included = info.loc[info["status"] == "ok", "user"].tolist()
     summaries = []
-    for subset in ("common", "b3_and_learners", "weekday_common", "weekend_common", "yesterday_observed", "yesterday_missing"):
-        s = cross_user_summary(metrics, included, subset).assign(subset=subset)
-        summaries.append(s)
+    for subset in SUMMARY_SUBSETS:
+        summaries.append(cross_user_summary(metrics, included, subset).assign(subset=subset))
     summary = pd.concat(summaries, ignore_index=True)
     summary.to_csv(out / "summary_across_users.csv", index=False)
 
     # 모든 사용자의 평가 시각을 합쳐 계산한 지표 (시각 수가 많은 사용자의 비중이 크다)
-    pooled = pd.concat([r["pred"] for r in results if "pred" in r and r["info"]["user"] in included])
+    pooled = pd.concat(
+        [pd.read_csv(out / "users" / u / "predictions.csv", parse_dates=["date"]) for u in included],
+        ignore_index=True,
+    )
     pooled_metrics = score(pooled)
     pooled_metrics.to_csv(out / "metrics_pooled.csv", index=False)
+
+    from plots import plot_users
+
+    plot_users(metrics, included, out / "per_user_errors.png")
 
     pd.set_option("display.width", 200)
     print("\n== 사용자 ==")
