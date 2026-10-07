@@ -253,6 +253,12 @@ def forecast_day(hourly: pd.DataFrame, target: pd.Timestamp, ridge_alpha_rule: s
     X_test = X[X["date"] == target]
 
     pred = pd.concat([X_test[["date", "hour"]], baseline_predictions(X_test)], axis=1)
+    pred["n_train"] = len(y_train)
+    if X_train["date"].nunique() < RIDGE_CV_FOLDS:
+        # 학습일이 날짜 단위 CV fold 수보다 적으면 학습 모델은 예측하지 않는다
+        pred[LEARNERS] = np.nan
+        pred["ridge_alpha"] = np.nan
+        return pred.reset_index(drop=True)
     # 기존 모델과 평일/휴일 구분 모델(_daytype)을 같은 학습 사례로 학습한다
     for daytype, suffix in ((False, ""), (True, "_daytype")):
         ridge = fit_ridge(X_train, y_train, ridge_alpha_rule, daytype)
@@ -263,7 +269,6 @@ def forecast_day(hourly: pd.DataFrame, target: pd.Timestamp, ridge_alpha_rule: s
         if not daytype:
             pred["ridge_alpha"] = ridge[-1].alpha
     pred[LEARNERS] = pred[LEARNERS].clip(lower=0)  # log(lux+1) >= 0
-    pred["n_train"] = len(y_train)
     return pred.reset_index(drop=True)
 
 
@@ -271,12 +276,21 @@ def forecast_day(hourly: pd.DataFrame, target: pd.Timestamp, ridge_alpha_rule: s
 # 평가
 # ---------------------------------------------------------------------------
 def rolling_origin(
-    hourly: pd.DataFrame, initial_days: int = INITIAL_TRAIN_DAYS, ridge_alpha_rule: str = "min"
+    hourly: pd.DataFrame,
+    initial_days: int = INITIAL_TRAIN_DAYS,
+    ridge_alpha_rule: str = "min",
+    skip_unobserved: bool = False,
 ) -> pd.DataFrame:
-    """첫 initial_days일 이후 하루씩 전진하는 순차 검증 결과(날짜 x 시각 x 모델 예측 + 실측)."""
+    """첫 initial_days일 이후 하루씩 전진하는 순차 검증 결과(날짜 x 시각 x 모델 예측 + 실측).
+
+    skip_unobserved=True면 실측이 하나도 없는 날(채점할 수 없는 날)은 예측을 생략한다.
+    다른 날의 예측에는 영향이 없다(각 날의 학습은 그 이전 관측만으로 매번 새로 한다).
+    """
     start, end = hourly.index[0], hourly.index[-1]
     results = []
     for target in pd.date_range(start + initial_days * ONE_DAY, end, freq="D"):
+        if skip_unobserved and hourly.loc[target].isna().all():
+            continue
         pred = forecast_day(hourly, target, ridge_alpha_rule)  # 1) target의 실측을 보기 전에 예측을 고정
         pred["actual"] = hourly.loc[target].to_numpy()  # 2) 실측이 공개된 뒤 비교
         results.append(pred)
@@ -301,6 +315,8 @@ def evaluation_subsets(pred: pd.DataFrame) -> dict[str, pd.Series]:
         "yesterday_observed": observed & has_yesterday,
         "yesterday_missing": observed & ~has_yesterday,
         "all": observed,
+        # 과거 특정일 값이 필요 없는 모델(B3, 학습 모델)이 모두 예측 가능한 시각
+        "b3_and_learners": observed & pred[[REFERENCE] + LEARNERS].notna().all(axis=1),
         "weekday_common": common & ~weekend,
         "weekend_common": common & weekend,
         "weekday_all": observed & ~weekend,
