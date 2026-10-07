@@ -38,8 +38,6 @@ from sklearn.model_selection import GridSearchCV, GroupKFold
 from sklearn.pipeline import Pipeline, make_pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
-from solar import SEOUL, sun_times
-
 HOURS = list(range(24))
 N_LAGS = 7
 INITIAL_TRAIN_DAYS = 28  # 첫 4주
@@ -50,21 +48,8 @@ MIN_SEGMENT_HOURS = 3  # 구간(6시간) 중 절반 이상 관측된 날만 구�
 LAG_COLS = [f"lag_{k}" for k in range(1, N_LAGS + 1)]
 SEG_COLS = [f"seg_{name}" for name in SEGMENTS]
 NUMERIC_COLS = LAG_COLS + ["hist_mean", "hist_std"] + SEG_COLS
-# 일출·일몰 기준 4구간의 최근 7일 평균 (segments="sun7d")
-#   밤: 일출-7시간 ~ 일출, 오전: 일출 ~ 12시, 오후: 12시 ~ 일몰, 저녁: 일몰 ~ 다음날 일출-7시간
-SUN_SEGMENTS = ["night", "morning", "afternoon", "evening"]
-SUN_COLS = [f"sun7_{name}" for name in SUN_SEGMENTS]
-NIGHT_HOURS_BEFORE_SUNRISE = 7
-MIN_SUN_SEGMENT_HOURS = 3  # 7일 동안 그 구간에 관측된 시간이 이보다 적으면 NaN
-LOCATION = SEOUL
 CALENDAR_COLS = ["hour", "weekday"]
 LGBM_COLS = NUMERIC_COLS + CALENDAR_COLS
-SEGMENT_MODES = ("recent_day", "sun7d")
-
-
-def numeric_cols(segments: str = "recent_day") -> list[str]:
-    """segments='recent_day'는 최근 관측일 하루의 06-12/12-18/18-24시 평균, 'sun7d'는 일출·일몰 4구간 7일 평균."""
-    return LAG_COLS + ["hist_mean", "hist_std"] + (SUN_COLS if segments == "sun7d" else SEG_COLS)
 # 평일/휴일 구분: 평일은 어제(D-1), 휴일(토·일)은 지난주 같은 요일(D-7)을 기준값으로 쓴다
 WEEKEND = (5, 6)
 DAYTYPE_COLS = ["is_weekend", "daytype_ref"]
@@ -154,46 +139,12 @@ def build_features(visible: pd.DataFrame) -> pd.DataFrame:
         recent = day_mean.shift(1).ffill(limit=N_LAGS - 1)
         features[f"seg_{name}"] = np.repeat(recent.to_numpy(), len(HOURS))
 
-    for name, recent in sun_segment_means(visible).items():
-        features[f"sun7_{name}"] = np.repeat(recent.to_numpy(), len(HOURS))
-
     index = pd.MultiIndex.from_product([visible.index, HOURS], names=["date", "hour"])
     X = pd.DataFrame(features, index=index).reset_index()
     X["weekday"] = X["date"].dt.weekday
     X["is_weekend"] = X["weekday"].isin(WEEKEND).astype(float)
     X["daytype_ref"] = X["lag_1"].where(X["is_weekend"] == 0, X["lag_7"])
     return X
-
-
-def sun_segment_labels(dates: pd.DatetimeIndex, location: dict = LOCATION) -> np.ndarray:
-    """(날짜 x 24시간) 각 시간 칸이 속한 구간 이름. 칸의 위치는 그 시간의 중앙(h+0.5시)으로 판단한다."""
-    sun = sun_times(dates, **location)
-    rise = sun["sunrise"].to_numpy()[:, None]
-    set_ = sun["sunset"].to_numpy()[:, None]
-    rise_next = sun_times(dates + ONE_DAY, **location)["sunrise"].to_numpy()[:, None]
-    t = np.arange(24) + 0.5
-    labels = np.full((len(dates), 24), "evening", dtype=object)
-    labels[(t >= rise) & (t < 12)] = "morning"
-    labels[(t >= 12) & (t < set_)] = "afternoon"
-    # 그날 일출 전 7시간, 또는 다음날 일출 7시간 전부터 자정까지는 밤
-    labels[(t < rise) & (t >= rise - NIGHT_HOURS_BEFORE_SUNRISE)] = "night"
-    labels[t >= 24 + rise_next - NIGHT_HOURS_BEFORE_SUNRISE] = "night"
-    return labels
-
-
-def sun_segment_means(visible: pd.DataFrame) -> dict[str, pd.Series]:
-    """d행에 d-7 ~ d-1일(자정 기준 7일, d일 이전 칸만)의 구간별 평균을 둔다."""
-    labels = sun_segment_labels(visible.index)
-    values = visible.to_numpy()
-    out = {}
-    for name in SUN_SEGMENTS:
-        in_seg = (labels == name) & ~np.isnan(values)
-        daily_sum = pd.Series(np.where(in_seg, values, 0).sum(axis=1), index=visible.index)
-        daily_n = pd.Series(in_seg.sum(axis=1), index=visible.index)
-        total = daily_sum.rolling(N_LAGS, min_periods=1).sum().shift(1)
-        n = daily_n.rolling(N_LAGS, min_periods=1).sum().shift(1)
-        out[name] = (total / n).where(n >= MIN_SUN_SEGMENT_HOURS)
-    return out
 
 
 # ---------------------------------------------------------------------------
@@ -220,18 +171,18 @@ def _ref_cols(daytype: bool) -> list[str]:
     return LAG_COLS + (["daytype_ref"] if daytype else [])
 
 
-def ridge_inputs(X: pd.DataFrame, daytype: bool = False, segments: str = "recent_day") -> pd.DataFrame:
+def ridge_inputs(X: pd.DataFrame, daytype: bool = False) -> pd.DataFrame:
     """Ridge용 입력: 빈 lag는 같은 시각의 과거 평균(hist_mean)으로 채우고 결측 지시변수를 붙인다."""
-    Z = X[numeric_cols(segments) + CALENDAR_COLS + (DAYTYPE_COLS if daytype else [])].copy()
+    Z = X[NUMERIC_COLS + CALENDAR_COLS + (DAYTYPE_COLS if daytype else [])].copy()
     for col in _ref_cols(daytype):
         Z[f"{col}_missing"] = Z[col].isna().astype(float)
         Z[col] = Z[col].fillna(Z["hist_mean"])
     return Z
 
 
-def make_ridge(daytype: bool = False, segments: str = "recent_day") -> Pipeline:
+def make_ridge(daytype: bool = False) -> Pipeline:
     numeric = (
-        numeric_cols(segments)
+        NUMERIC_COLS
         + (DAYTYPE_COLS if daytype else [])
         + [f"{col}_missing" for col in _ref_cols(daytype)]
     )
@@ -262,11 +213,7 @@ def _one_standard_error_rule(cv_results: dict) -> int:
 
 
 def fit_ridge(
-    X_train: pd.DataFrame,
-    y_train: np.ndarray,
-    alpha_rule: str = "min",
-    daytype: bool = False,
-    segments: str = "recent_day",
+    X_train: pd.DataFrame, y_train: np.ndarray, alpha_rule: str = "min", daytype: bool = False
 ) -> Pipeline:
     """alpha는 학습 구간 안에서 날짜 단위 GroupKFold로 고른다.
 
@@ -275,27 +222,18 @@ def fit_ridge(
     alpha_rule='min'은 CV 오차가 가장 작은 alpha, '1se'는 1-SE 규칙(민감도 분석용).
     """
     search = GridSearchCV(
-        make_ridge(daytype, segments),
+        make_ridge(daytype),
         {"ridge__alpha": RIDGE_ALPHAS},
         cv=GroupKFold(n_splits=RIDGE_CV_FOLDS),
         scoring="neg_mean_squared_error",
         refit=_one_standard_error_rule if alpha_rule == "1se" else True,
     )
-    search.fit(ridge_inputs(X_train, daytype, segments), y_train, groups=X_train["date"].to_numpy())
+    search.fit(ridge_inputs(X_train, daytype), y_train, groups=X_train["date"].to_numpy())
     return search.best_estimator_
 
 
-def forecast_day(
-    hourly: pd.DataFrame,
-    target: pd.Timestamp,
-    ridge_alpha_rule: str = "min",
-    segments: str = "recent_day",
-    daytype_variants: bool = True,
-) -> pd.DataFrame:
+def forecast_day(hourly: pd.DataFrame, target: pd.Timestamp, ridge_alpha_rule: str = "min") -> pd.DataFrame:
     """target 날짜의 0~23시 조도를 예측한다. target 이전(< target) 관측만 사용한다.
-
-    segments는 구간 평균 피처의 정의(numeric_cols 참고). daytype_variants=False면
-    평일/휴일 구분 학습 모델(_daytype)은 계산하지 않고 NaN으로 둔다.
 
     학습 사례는 (d, h) 쌍: 입력 = d 이전 날짜로 만든 X, 정답 = d일 h시 실측.
     d는 lag 7개가 정의되는 첫 날(시작일 + 7일)부터 target 전날까지이다.
@@ -322,12 +260,10 @@ def forecast_day(
         pred["ridge_alpha"] = np.nan
         return pred.reset_index(drop=True)
     # 기존 모델과 평일/휴일 구분 모델(_daytype)을 같은 학습 사례로 학습한다
-    variants = ((False, ""), (True, "_daytype")) if daytype_variants else ((False, ""),)
-    pred[LEARNERS] = np.nan
-    for daytype, suffix in variants:
-        ridge = fit_ridge(X_train, y_train, ridge_alpha_rule, daytype, segments)
-        pred[f"Ridge{suffix}"] = ridge.predict(ridge_inputs(X_test, daytype, segments))
-        cols = numeric_cols(segments) + CALENDAR_COLS + (DAYTYPE_COLS if daytype else [])
+    for daytype, suffix in ((False, ""), (True, "_daytype")):
+        ridge = fit_ridge(X_train, y_train, ridge_alpha_rule, daytype)
+        pred[f"Ridge{suffix}"] = ridge.predict(ridge_inputs(X_test, daytype))
+        cols = LGBM_COLS + (DAYTYPE_COLS if daytype else [])
         lgbm = lgb.LGBMRegressor(**LGBM_PARAMS).fit(X_train[cols], y_train)
         pred[f"LightGBM{suffix}"] = lgbm.predict(X_test[cols])
         if not daytype:
@@ -344,8 +280,6 @@ def rolling_origin(
     initial_days: int = INITIAL_TRAIN_DAYS,
     ridge_alpha_rule: str = "min",
     skip_unobserved: bool = False,
-    segments: str = "recent_day",
-    daytype_variants: bool = True,
 ) -> pd.DataFrame:
     """첫 initial_days일 이후 하루씩 전진하는 순차 검증 결과(날짜 x 시각 x 모델 예측 + 실측).
 
@@ -357,7 +291,7 @@ def rolling_origin(
     for target in pd.date_range(start + initial_days * ONE_DAY, end, freq="D"):
         if skip_unobserved and hourly.loc[target].isna().all():
             continue
-        pred = forecast_day(hourly, target, ridge_alpha_rule, segments, daytype_variants)  # 1) target의 실측을 보기 전에 예측을 고정
+        pred = forecast_day(hourly, target, ridge_alpha_rule)  # 1) target의 실측을 보기 전에 예측을 고정
         pred["actual"] = hourly.loc[target].to_numpy()  # 2) 실측이 공개된 뒤 비교
         results.append(pred)
     return pd.concat(results, ignore_index=True)
@@ -374,8 +308,7 @@ def evaluation_subsets(pred: pd.DataFrame) -> dict[str, pd.Series]:
     """
     observed = pred["actual"].notna()
     has_yesterday = pred["B1_yesterday"].notna()
-    computed = [m for m in MODELS if pred[m].notna().any()]  # 계산하지 않은 모델은 제외
-    common = observed & pred[computed].notna().all(axis=1)
+    common = observed & pred[MODELS].notna().all(axis=1)
     weekend = pred["date"].dt.weekday.isin(WEEKEND)
     return {
         "common": common,
@@ -383,8 +316,7 @@ def evaluation_subsets(pred: pd.DataFrame) -> dict[str, pd.Series]:
         "yesterday_missing": observed & ~has_yesterday,
         "all": observed,
         # 과거 특정일 값이 필요 없는 모델(B3, 학습 모델)이 모두 예측 가능한 시각
-        "b3_and_learners": observed
-        & pred[[REFERENCE] + [m for m in LEARNERS if m in computed]].notna().all(axis=1),
+        "b3_and_learners": observed & pred[[REFERENCE] + LEARNERS].notna().all(axis=1),
         "weekday_common": common & ~weekend,
         "weekend_common": common & weekend,
         "weekday_all": observed & ~weekend,
