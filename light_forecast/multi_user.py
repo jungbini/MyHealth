@@ -23,6 +23,7 @@ from forecast import (
     MODELS,
     ONE_DAY,
     REFERENCE,
+    SEGMENT_MODES,
     WEEKEND,
     bootstrap_vs_reference,
     hourly_matrix,
@@ -52,7 +53,9 @@ def sheet_readings(sheet: pd.DataFrame) -> pd.DataFrame:
     return readings.groupby("timestamp", as_index=False)["lux"].mean()
 
 
-def evaluate_user(user: str, sheet: pd.DataFrame, out: Path) -> dict:
+def evaluate_user(
+    user: str, sheet: pd.DataFrame, out: Path, segments: str = "recent_day", daytype_variants: bool = True
+) -> dict:
     warnings.filterwarnings("ignore")
     readings = sheet_readings(sheet)
     hourly = hourly_matrix(readings, "mean")
@@ -71,7 +74,9 @@ def evaluate_user(user: str, sheet: pd.DataFrame, out: Path) -> dict:
         info["status"] = "skipped: 첫 4주 이후 관측 없음"
         return {"info": info}
 
-    pred = rolling_origin(hourly, skip_unobserved=True)
+    pred = rolling_origin(
+        hourly, skip_unobserved=True, segments=segments, daytype_variants=daytype_variants
+    )
     user_dir = out / "users" / user
     user_dir.mkdir(parents=True, exist_ok=True)
     pred.to_csv(user_dir / "predictions.csv", index=False)
@@ -80,6 +85,8 @@ def evaluate_user(user: str, sheet: pd.DataFrame, out: Path) -> dict:
     boots = []
     for days, rows in (("all", pred), ("weekday", pred[~weekend]), ("weekend", pred[weekend])):
         for model, reference in COMPARISONS:
+            if rows[[model, reference]].isna().all().any():
+                continue
             if rows[[model, reference, "actual"]].notna().all(axis=1).any():
                 boots.append({**bootstrap_vs_reference(rows, model, reference), "days_type": days, "user": user})
     info["status"] = "ok" if info["eval_days"] >= MIN_EVAL_DAYS else f"평가일 {MIN_EVAL_DAYS}일 미만"
@@ -113,6 +120,11 @@ def main() -> None:
     parser.add_argument("--xlsx", required=True, help="시트별 사용자 조도 엑셀 (timestamp, value 열)")
     parser.add_argument("--out", default="outputs/multi_user")
     parser.add_argument("--workers", type=int, default=4)
+    parser.add_argument(
+        "--segments", choices=SEGMENT_MODES, default="recent_day",
+        help="구간 평균 피처: recent_day(최근 관측일 하루, 06/12/18시 경계) 또는 sun7d(일출·일몰 4구간 7일 평균)",
+    )
+    parser.add_argument("--no-daytype", action="store_true", help="평일/휴일 구분 학습 모델 생략")
     parser.add_argument("--summary-only", action="store_true", help="저장된 사용자별 결과로 요약만 다시 계산")
     args = parser.parse_args()
     out = Path(args.out)
@@ -126,7 +138,10 @@ def main() -> None:
     with ProcessPoolExecutor(max_workers=args.workers) as pool:
         # 큰 사용자부터 시작해 병렬 처리 시간을 줄인다
         order = sorted(sheets, key=lambda s: -len(sheets[s]))
-        futures = {pool.submit(evaluate_user, str(s), sheets[s], out): s for s in order}
+        futures = {
+            pool.submit(evaluate_user, str(s), sheets[s], out, args.segments, not args.no_daytype): s
+            for s in order
+        }
         for fut in as_completed(futures):
             res = fut.result()
             results.append(res)

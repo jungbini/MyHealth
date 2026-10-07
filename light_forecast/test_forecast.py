@@ -117,3 +117,32 @@ def test_rolling_origin_starts_after_four_weeks():
     # 학습 사례: 8일째(lag 7개가 생기는 날)부터 28일째까지의 관측
     assert (first["n_train"] == hourly.iloc[7:28].notna().sum().sum()).all()
     np.testing.assert_array_equal(first["actual"].to_numpy(), hourly.loc[first_target].to_numpy())
+
+
+def test_sun_segment_labels_follow_sunrise_and_sunset():
+    from forecast import sun_segment_labels
+
+    summer, winter = pd.Timestamp("2025-06-21"), pd.Timestamp("2025-12-21")
+    labels = sun_segment_labels(pd.DatetimeIndex([summer, winter]))
+    # 서울 하지: 일출 05:11, 일몰 19:56 / 동지: 일출 07:43, 일몰 17:17
+    # 하지 다음날 일출 05:11 -> 밤은 22:11부터
+    assert list(labels[0, [0, 4, 5, 11, 12, 19, 20, 21, 22, 23]]) == [
+        "night", "night", "morning", "morning", "afternoon", "afternoon", "evening", "evening", "night", "night",
+    ]
+    # 동지 00시대(중앙 00:30)는 일출-7시간(00:43) 이전이라 전날 저녁, 그 뒤 일출 전까지 밤
+    assert list(labels[1, [0, 1, 6, 7, 8, 16, 17, 23]]) == [
+        "evening", "night", "night", "night", "morning", "afternoon", "evening", "evening",
+    ]
+
+
+def test_sun_segment_means_use_previous_seven_days_only():
+    hourly = synthetic_hourly(missing=0.0)
+    X = build_features(hourly).set_index(["date", "hour"])
+    d = pd.Timestamp("2026-01-20")
+    from forecast import sun_segment_labels
+
+    window = hourly.loc[d - pd.Timedelta(days=7) : d - pd.Timedelta(days=1)]
+    labels = sun_segment_labels(hourly.index)[hourly.index.get_indexer(window.index)]
+    for name in ["night", "morning", "afternoon", "evening"]:
+        expected = window.to_numpy()[labels == name].mean()
+        assert X.loc[(d, 5), f"sun7_{name}"] == pytest.approx(expected)
