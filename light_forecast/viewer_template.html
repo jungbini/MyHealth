@@ -1,0 +1,914 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LightGBM 조도 예측 뷰어</title>
+<style>
+:root {
+  color-scheme: light;
+  --page: #f9f9f7;
+  --surface: #fcfcfb;
+  --ink: #0b0b0b;
+  --ink-2: #52514e;
+  --muted: #898781;
+  --grid: #e1e0d9;
+  --axis: #c3c2b7;
+  --border: rgba(11, 11, 11, 0.10);
+  --selected: rgba(11, 11, 11, 0.07);
+  --shade: rgba(11, 11, 11, 0.045);
+  --actual: #2a78d6;
+  --pred: #eb6834;
+  --brush: rgba(42, 120, 214, 0.12);
+  --brush-edge: #2a78d6;
+  --focus: #2a78d6;
+  --shadow: rgba(0, 0, 0, 0.12);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --page: #0d0d0d;
+    --surface: #1a1a19;
+    --ink: #ffffff;
+    --ink-2: #c3c2b7;
+    --muted: #898781;
+    --grid: #2c2c2a;
+    --axis: #383835;
+    --border: rgba(255, 255, 255, 0.10);
+    --selected: rgba(255, 255, 255, 0.10);
+    --shade: rgba(255, 255, 255, 0.05);
+    --actual: #3987e5;
+    --pred: #d95926;
+    --brush: rgba(57, 135, 229, 0.18);
+    --brush-edge: #3987e5;
+    --focus: #3987e5;
+    --shadow: rgba(0, 0, 0, 0.5);
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --page: #0d0d0d;
+  --surface: #1a1a19;
+  --ink: #ffffff;
+  --ink-2: #c3c2b7;
+  --muted: #898781;
+  --grid: #2c2c2a;
+  --axis: #383835;
+  --border: rgba(255, 255, 255, 0.10);
+  --selected: rgba(255, 255, 255, 0.10);
+  --shade: rgba(255, 255, 255, 0.05);
+  --actual: #3987e5;
+  --pred: #d95926;
+  --brush: rgba(57, 135, 229, 0.18);
+  --brush-edge: #3987e5;
+  --focus: #3987e5;
+  --shadow: rgba(0, 0, 0, 0.5);
+}
+* { box-sizing: border-box; }
+html { background: var(--page); }
+body {
+  margin: 0;
+  background: var(--page);
+  color: var(--ink);
+  font: 14px/1.5 system-ui, -apple-system, "Segoe UI", "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+}
+.wrap { max-width: 1180px; margin: 0 auto; padding: 20px 16px 40px; }
+.top { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+.top > button { flex: none; white-space: nowrap; }
+h1 { font-size: 20px; line-height: 1.3; margin: 0 0 4px; font-weight: 650; }
+.sub { margin: 0; color: var(--ink-2); }
+.notice {
+  margin: 12px 0 16px; padding: 2px 10px; font-size: 12.5px; color: var(--ink-2);
+  border-left: 2px solid var(--axis);
+}
+.filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; margin-bottom: 14px; }
+.field { display: inline-flex; align-items: center; gap: 8px; color: var(--ink-2); }
+.field > span { flex: none; white-space: nowrap; }
+select, button {
+  font: inherit; color: var(--ink); background: var(--surface);
+  border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; cursor: pointer;
+}
+select { min-width: 210px; max-width: 100%; }
+button:disabled { opacity: 0.4; cursor: default; }
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.seg button { border: 0; border-radius: 0; border-right: 1px solid var(--border); padding: 6px 11px; }
+.seg button:last-child { border-right: 0; }
+.seg button[aria-pressed="true"] { background: var(--selected); font-weight: 650; }
+button:focus-visible, select:focus-visible, svg:focus-visible, .brush-zone:focus-visible {
+  outline: 2px solid var(--focus); outline-offset: 2px;
+}
+.range-title { margin: 0 0 6px; font-size: 13px; color: var(--ink-2); }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 8px; margin-bottom: 12px; }
+.tile { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; }
+.tile .label { font-size: 12.5px; color: var(--ink-2); }
+.tile .value { font-size: 22px; font-weight: 600; line-height: 1.35; }
+.tile .note { font-size: 12px; color: var(--muted); }
+.status { margin: 0 0 12px; font-size: 13px; color: var(--ink-2); }
+.status:empty { display: none; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px 12px; margin: 0 0 16px; }
+.title-row { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 4px 16px; }
+.card h2 { font-size: 15px; margin: 0; font-weight: 600; }
+.caption { margin: 2px 0 6px; font-size: 12.5px; color: var(--ink-2); }
+.legend { display: flex; flex-wrap: wrap; gap: 4px; }
+.legend button {
+  display: inline-flex; align-items: center; gap: 7px; padding: 3px 8px;
+  border-color: transparent; background: transparent; color: var(--ink-2);
+}
+.legend button[aria-pressed="false"] { opacity: 0.45; text-decoration: line-through; }
+.key { display: inline-block; width: 16px; height: 0; border-top: 2px solid; border-radius: 1px; flex: none; }
+.key.s-actual { border-color: var(--actual); }
+.key.s-pred { border-color: var(--pred); }
+.chart { width: 100%; position: relative; }
+svg.plot { display: block; }
+.grid { stroke: var(--grid); stroke-width: 1; shape-rendering: crispEdges; }
+.grid-v { stroke: var(--grid); stroke-width: 1; shape-rendering: crispEdges; opacity: 0.6; }
+.axis { stroke: var(--axis); stroke-width: 1; shape-rendering: crispEdges; }
+.tick { fill: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.axis-title, .shade-label { fill: var(--muted); font-size: 11px; }
+.empty-label { fill: var(--muted); font-size: 13px; }
+.shade { fill: var(--shade); }
+.line { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.line.s-actual { stroke: var(--actual); }
+.line.s-pred { stroke: var(--pred); }
+.solo.s-actual, .marker.s-actual, .cross-dot.s-actual { fill: var(--actual); }
+.solo.s-pred, .marker.s-pred, .cross-dot.s-pred { fill: var(--pred); }
+.marker, .cross-dot { stroke: var(--surface); stroke-width: 2; }
+.cross-line { stroke: var(--ink-2); stroke-width: 1; opacity: 0.55; shape-rendering: crispEdges; }
+.hit { fill: transparent; cursor: crosshair; }
+.end-label { fill: var(--ink-2); font-size: 11.5px; }
+.ov-line { fill: none; stroke-width: 1.5; stroke-linejoin: round; }
+.ov-line.s-actual { stroke: var(--actual); }
+.ov-line.s-pred { stroke: var(--pred); }
+.brush-zone { cursor: pointer; touch-action: none; }
+.brush { fill: var(--brush); stroke: var(--brush-edge); stroke-width: 1; cursor: grab; }
+.brush-handle { stroke: var(--brush-edge); stroke-width: 3; stroke-linecap: round; }
+.hint { margin: 6px 0 0; font-size: 12px; color: var(--muted); }
+.table-toggle { margin-top: 10px; }
+.table-wrap { max-height: 380px; overflow: auto; margin-top: 8px; border-top: 1px solid var(--grid); }
+table { border-collapse: collapse; width: 100%; font-size: 12.5px; font-variant-numeric: tabular-nums; }
+caption { text-align: left; color: var(--ink-2); padding: 6px 0; font-size: 12px; }
+th, td { text-align: right; padding: 4px 10px; border-bottom: 1px solid var(--grid); white-space: nowrap; }
+th:first-child, td:first-child { text-align: left; }
+thead th { position: sticky; top: 0; background: var(--surface); color: var(--ink-2); font-weight: 600; }
+.tooltip {
+  position: fixed; z-index: 10; pointer-events: none; min-width: 180px; max-width: 280px;
+  background: var(--surface); color: var(--ink); border: 1px solid var(--border); border-radius: 8px;
+  box-shadow: 0 4px 16px var(--shadow); padding: 8px 10px; font-size: 12.5px;
+}
+.tip-title { color: var(--ink-2); margin-bottom: 4px; }
+.tip-row { display: flex; align-items: center; gap: 8px; }
+.tip-row strong { font-weight: 650; min-width: 74px; font-variant-numeric: tabular-nums; }
+.tip-label { color: var(--ink-2); }
+.tip-note { color: var(--muted); margin-top: 4px; font-size: 12px; }
+.notes { font-size: 12.5px; color: var(--ink-2); }
+.notes h2 { font-size: 13px; margin: 0 0 4px; color: var(--ink); }
+.notes ul { margin: 0; padding-left: 18px; }
+.notes li { margin: 2px 0; }
+@media (max-width: 560px) {
+  h1 { font-size: 18px; }
+  .field { width: 100%; }
+  .field select { flex: 1 1 auto; min-width: 0; }
+  .tile .value { font-size: 19px; }
+}
+</style>
+</head>
+<body>
+<main class="wrap">
+  <header class="top">
+    <div>
+      <h1>LightGBM 조도 예측 뷰어</h1>
+      <p class="sub">사용자별 시간 조도의 실측과 LightGBM 예측. 첫 4주 이후 매일 전날까지의 데이터로 다시 학습해 그날 0~23시를 예측했습니다.</p>
+    </div>
+    <button id="theme" type="button"></button>
+  </header>
+  <p class="notice">개인 건강 데이터가 들어 있는 파일입니다. 외부로 공유할 때 주의하세요.</p>
+
+  <section class="filters" aria-label="보기 설정">
+    <label class="field"><span>사용자</span><select id="user"></select></label>
+    <div class="seg" role="group" aria-label="기간" id="presets"></div>
+    <div class="seg" role="group" aria-label="세로축 눈금" id="scales"></div>
+    <div class="seg" role="group" aria-label="구간 이동">
+      <button type="button" id="prev">이전 구간</button>
+      <button type="button" id="next">다음 구간</button>
+    </div>
+  </section>
+
+  <p class="range-title" id="range-title"></p>
+  <section class="tiles" id="tiles" aria-label="선택한 구간의 지표"></section>
+  <p class="status" id="status" role="status"></p>
+
+  <figure class="card" style="margin-left:0;margin-right:0">
+    <div class="title-row">
+      <h2>시간별 조도: 실측과 LightGBM 예측</h2>
+      <div class="legend" data-legend></div>
+    </div>
+    <p class="caption" id="main-caption"></p>
+    <div class="chart" id="main-chart"></div>
+    <div class="chart" id="overview"></div>
+    <p class="hint">아래 전체 기간 띠에서 파란 창을 끌어 구간을 옮기고, 창의 양 끝을 끌어 길이를 바꿉니다. 띠의 다른 곳을 누르면 그 위치로 창이 옮겨집니다. 그래프를 선택한 뒤 ←/→ 키로 시각을 옮길 수 있습니다(Shift를 함께 누르면 크게 이동).</p>
+    <button type="button" class="table-toggle" id="table-toggle" aria-expanded="false" aria-controls="table-wrap">표로 보기</button>
+    <div class="table-wrap" id="table-wrap" hidden>
+      <table>
+        <caption>일별 요약 (선택한 구간). 예측 평균과 MAE는 실측이 있는 시각만 계산합니다.</caption>
+        <thead><tr><th scope="col">날짜</th><th scope="col">실측 시각 수</th><th scope="col">실측 평균</th><th scope="col">예측 평균</th><th scope="col">MAE (log)</th></tr></thead>
+        <tbody id="table-body"></tbody>
+      </table>
+    </div>
+  </figure>
+
+  <figure class="card" style="margin-left:0;margin-right:0">
+    <div class="title-row">
+      <h2>하루 시간대별 평균 (선택한 구간)</h2>
+      <div class="legend" data-legend></div>
+    </div>
+    <p class="caption" id="profile-caption">실측과 예측이 모두 있는 시각만 시간대별로 평균했습니다.</p>
+    <div class="chart" id="profile-chart"></div>
+  </figure>
+
+  <section class="card notes" aria-label="방법">
+    <h2>값의 의미</h2>
+    <ul>
+      <li>시간값은 측정치마다 log(lux+1)을 구해 시간별로 평균한 값입니다. 그래프와 표의 lux는 이 평균을 되돌린 값(exp(평균)−1)이라 시간 안의 산술평균보다 작게 나올 수 있습니다.</li>
+      <li>예측은 <code>lightgbm_model.py</code>의 순차 검증 결과입니다. 기록 첫 4주는 학습에만 쓰고, 그 뒤로는 매일 전날까지의 데이터로 다시 학습해 그날 0~23시를 예측했습니다. 예측 시점 이후의 관측은 학습에 쓰지 않았습니다.</li>
+      <li>실측이 하나도 없는 날과 학습에 쓸 날이 5일 미만인 날은 예측하지 않았습니다.</li>
+      <li>MAE·RMSE는 log(lux+1) 척도이며, 실측과 예측이 모두 있는 시각만으로 계산합니다. 구간이 45일을 넘으면 시간별 그래프 대신 일 평균을 그립니다.</li>
+      <li id="provenance"></li>
+    </ul>
+  </section>
+</main>
+<div class="tooltip" id="tooltip" role="status" aria-live="polite" hidden></div>
+<script id="viewer-data" type="application/json">__VIEWER_DATA__</script>
+<script>
+(() => {
+  'use strict';
+  const DATA = JSON.parse(document.getElementById('viewer-data').textContent);
+  const DAY_MS = 86400000;
+  const DAILY_AFTER_DAYS = 45;
+  const PRESETS = [[7, '7일'], [14, '14일'], [30, '30일'], [90, '90일'], [0, '전체']];
+  const LUX_TICKS = [0, 10, 100, 1000, 10000, 100000, 1000000];
+  const WEEKDAYS = ['일', '월', '화', '수', '목', '금', '토'];
+  const SERIES = [
+    { key: 'actual', label: '실측', cls: 's-actual' },
+    { key: 'pred', label: 'LightGBM 예측', cls: 's-pred' },
+  ];
+  const SVG_NS = 'http://www.w3.org/2000/svg';
+  const nf = new Intl.NumberFormat('ko-KR');
+  const nf2 = new Intl.NumberFormat('ko-KR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+  const state = { u: 0, view: [0, 0], scale: 'log', show: { actual: true, pred: true } };
+  const $ = (id) => document.getElementById(id);
+
+  // ---------- 작은 도우미 ----------
+  function el(tag, attrs, parent, text) {
+    const node = document.createElement(tag);
+    for (const [k, v] of Object.entries(attrs || {})) node.setAttribute(k, v);
+    if (text !== undefined) node.textContent = text;
+    if (parent) parent.appendChild(node);
+    return node;
+  }
+  function sv(tag, attrs, parent, text) {
+    const node = document.createElementNS(SVG_NS, tag);
+    for (const [k, v] of Object.entries(attrs || {})) node.setAttribute(k, v);
+    if (text !== undefined) node.textContent = text;
+    if (parent) parent.appendChild(node);
+    return node;
+  }
+  const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+  const pad2 = (n) => String(n).padStart(2, '0');
+  const isNum = (v) => v === v; // NaN이 아니면 true
+
+  function dateOf(p, day) { return new Date((p.startDay + day) * DAY_MS); }
+  function fmtDate(dt) { return `${dt.getUTCFullYear()}-${pad2(dt.getUTCMonth() + 1)}-${pad2(dt.getUTCDate())}`; }
+  function fmtDay(p, day) { const dt = dateOf(p, day); return `${fmtDate(dt)} (${WEEKDAYS[dt.getUTCDay()]})`; }
+  function luxOf(v) { return Math.expm1(v); }
+  function luxText(v) {
+    if (!isNum(v)) return '–';
+    const lux = luxOf(v);
+    return (lux < 10 ? lux.toFixed(1) : nf.format(Math.round(lux))) + ' lux';
+  }
+  function compact(n) {
+    if (n >= 1e6) return +(n / 1e6).toFixed(1) + 'M';
+    if (n >= 1000) return +(n / 1000).toFixed(1) + 'K';
+    return String(+n.toFixed(1));
+  }
+  function niceStep(x) {
+    const p = Math.pow(10, Math.floor(Math.log10(x)));
+    const m = x / p;
+    return (m <= 1 ? 1 : m <= 2 ? 2 : m <= 5 ? 5 : 10) * p;
+  }
+
+  // ---------- 사용자 데이터 준비 (처음 선택할 때 한 번) ----------
+  function prepare(user) {
+    if (user._p) return user._p;
+    const act = Float64Array.from(user.actual, (v) => (v === null ? NaN : v));
+    const pred = Float64Array.from(user.pred, (v) => (v === null ? NaN : v));
+    const D = user.days;
+    const dayAct = new Float64Array(D).fill(NaN);
+    const dayPred = new Float64Array(D).fill(NaN);
+    const dayErr = new Float64Array(D).fill(NaN);
+    const dayN = new Int32Array(D);
+    let maxLog = 0;
+    for (let d = 0; d < D; d++) {
+      let sa = 0, na = 0, sp = 0, se = 0, np = 0;
+      for (let h = 0; h < 24; h++) {
+        const a = act[d * 24 + h], q = pred[d * 24 + h];
+        if (isNum(a)) { sa += a; na++; if (a > maxLog) maxLog = a; }
+        if (isNum(q) && q > maxLog) maxLog = q;
+        if (isNum(a) && isNum(q)) { sp += q; se += Math.abs(q - a); np++; }
+      }
+      dayN[d] = na;
+      if (na) dayAct[d] = sa / na;
+      if (np) { dayPred[d] = sp / np; dayErr[d] = se / np; }
+    }
+    user._p = {
+      n: D * 24, D, act, pred, dayAct, dayPred, dayErr, dayN, maxLog,
+      startDay: Math.round(Date.parse(user.start + 'T00:00:00Z') / DAY_MS),
+      trainEnd: Math.min(D, DATA.initialTrainDays) * 24,
+    };
+    return user._p;
+  }
+
+  function windowStats(p, s, e) {
+    let n = 0, sa = 0, ss = 0, sl = 0;
+    const days = new Set();
+    for (let i = s; i < e; i++) {
+      const a = p.act[i], q = p.pred[i];
+      if (isNum(a) && isNum(q)) {
+        const d = q - a;
+        n++; sa += Math.abs(d); ss += d * d; sl += Math.abs(luxOf(q) - luxOf(a));
+        days.add(Math.floor(i / 24));
+      }
+    }
+    return n ? { n, days: days.size, mae: sa / n, rmse: Math.sqrt(ss / n), maeLux: sl / n } : { n: 0, days: 0 };
+  }
+
+  // ---------- 축 ----------
+  function yAxis(p, top, bottom, maxShown) {
+    if (state.scale === 'log') {
+      const hi = Math.max(p.maxLog * 1.04, Math.log1p(10));
+      return {
+        map: (v) => bottom - (v / hi) * (bottom - top),
+        ticks: LUX_TICKS.filter((t) => Math.log1p(t) <= hi).map((t) => ({ v: Math.log1p(t), label: compact(t) })),
+        title: 'lux (로그 눈금)',
+      };
+    }
+    const maxLux = Math.max(luxOf(maxShown || 0), 10);
+    const step = niceStep(maxLux / 4);
+    const hi = Math.ceil(maxLux / step) * step;
+    const ticks = [];
+    for (let t = 0; t <= hi + step / 1e6; t += step) ticks.push({ v: Math.log1p(t), label: compact(t) });
+    return { map: (v) => bottom - (luxOf(v) / hi) * (bottom - top), ticks, title: 'lux' };
+  }
+
+  function timeTicks(p, s, e, pw) {
+    const maxTicks = Math.max(2, Math.floor(pw / 74));
+    for (const st of [3, 6, 12, 24, 48, 72, 168, 336]) {
+      if ((e - s) / st > maxTicks) continue;
+      const ticks = [];
+      for (let t = Math.ceil(s / st) * st; t <= e; t += st) {
+        const dt = dateOf(p, Math.floor(t / 24));
+        const label = t % 24 === 0 ? `${dt.getUTCMonth() + 1}/${dt.getUTCDate()}` : `${pad2(t % 24)}시`;
+        ticks.push({ t, label });
+      }
+      return ticks;
+    }
+    const first = dateOf(p, Math.floor(s / 24));
+    const months = (e - s) / 24 / 30.4;
+    const stepM = [1, 2, 3, 6, 12].find((m) => months / m <= maxTicks) || 12;
+    const ticks = [];
+    let y = first.getUTCFullYear(), m = first.getUTCMonth() + 1;
+    if (m > 11) { m = 0; y++; }
+    for (;;) {
+      const day = Date.UTC(y, m, 1) / DAY_MS - p.startDay;
+      const t = day * 24;
+      if (t > e) break;
+      if (t >= s && m % stepM === 0) ticks.push({ t, label: `${y}.${pad2(m + 1)}` });
+      m++; if (m > 11) { m = 0; y++; }
+    }
+    return ticks;
+  }
+
+  // ---------- 그리기 도우미 ----------
+  function drawSeries(svg, pts, cls, lineClass) {
+    let d = '';
+    let run = [];
+    const solos = [];
+    const flush = () => {
+      if (run.length === 1) solos.push(run[0]);
+      else if (run.length > 1) d += 'M' + run.map(([x, y]) => x.toFixed(1) + ',' + y.toFixed(1)).join('L');
+      run = [];
+    };
+    for (const pt of pts) { if (pt) run.push(pt); else flush(); }
+    flush();
+    if (d) sv('path', { d, class: `${lineClass || 'line'} ${cls}` }, svg);
+    if (!lineClass) for (const [x, y] of solos) sv('circle', { cx: x, cy: y, r: 2.5, class: 'solo ' + cls }, svg);
+  }
+
+  function drawYAxis(svg, y, m, pw) {
+    for (const tk of y.ticks) {
+      const yy = Math.round(y.map(tk.v)) + 0.5;
+      sv('line', { x1: m.l, x2: m.l + pw, y1: yy, y2: yy, class: 'grid' }, svg);
+      sv('text', { x: m.l - 8, y: yy + 4, 'text-anchor': 'end', class: 'tick' }, svg, tk.label);
+    }
+    sv('text', { x: m.l - 8, y: m.t - 10, 'text-anchor': 'start', class: 'axis-title' }, svg, y.title);
+  }
+
+  function drawEndLabels(svg, ends, m, pw) {
+    // 끝 라벨이 서로 가까우면 붙이지 않는다 (범례와 툴팁이 대신한다)
+    if (ends.length === 2 && Math.abs(ends[0].y - ends[1].y) < 14) return;
+    for (const end of ends) {
+      sv('text', { x: m.l + pw + 8, y: end.y + 4, class: 'end-label' }, svg, end.label);
+    }
+  }
+
+  // ---------- 툴팁 ----------
+  const tip = $('tooltip');
+  function showTip(title, values, note, at) {
+    tip.textContent = '';
+    el('div', { class: 'tip-title' }, tip, title);
+    for (const s of SERIES) {
+      if (!state.show[s.key]) continue;
+      const row = el('div', { class: 'tip-row' }, tip);
+      el('span', { class: 'key ' + s.cls }, row);
+      el('strong', {}, row, luxText(values[s.key]));
+      el('span', { class: 'tip-label' }, row, s.label);
+    }
+    if (note) el('div', { class: 'tip-note' }, tip, note);
+    tip.hidden = false;
+    const w = tip.offsetWidth, h = tip.offsetHeight, gap = 14;
+    let x = at.x + gap, yy = at.y + gap;
+    if (x + w > window.innerWidth - 8) x = at.x - gap - w;
+    if (yy + h > window.innerHeight - 8) yy = at.y - gap - h;
+    tip.style.left = Math.max(8, x) + 'px';
+    tip.style.top = Math.max(8, yy) + 'px';
+  }
+  function hideTip() { tip.hidden = true; }
+
+  function errorNote(values) {
+    if (isNum(values.actual) && isNum(values.pred)) {
+      const d = values.pred - values.actual;
+      return `예측−실측 ${d >= 0 ? '+' : ''}${d.toFixed(2)} (log 척도)`;
+    }
+    return '';
+  }
+
+  // 크로스헤어: 포인터와 가장 가까운 칸에 붙고, 키보드(←/→)로도 같은 내용을 보여 준다
+  function attachHover(svg, g) {
+    const layer = sv('g', { visibility: 'hidden' }, svg);
+    const vline = sv('line', { y1: g.top, y2: g.bottom, class: 'cross-line' }, layer);
+    const dots = SERIES.map((s) => sv('circle', { r: 4, class: 'cross-dot ' + s.cls }, layer));
+    const hit = sv('rect', { x: g.left, y: g.top, width: g.width, height: g.bottom - g.top, class: 'hit' }, svg);
+    let cur = -1;
+    function show(slot, at) {
+      cur = slot;
+      const x = g.xAt(slot);
+      vline.setAttribute('x1', x); vline.setAttribute('x2', x);
+      const values = g.values(slot);
+      SERIES.forEach((s, k) => {
+        const on = state.show[s.key] && isNum(values[s.key]);
+        dots[k].setAttribute('visibility', on ? 'visible' : 'hidden');
+        if (on) { dots[k].setAttribute('cx', x); dots[k].setAttribute('cy', g.yOf(values[s.key])); }
+      });
+      layer.setAttribute('visibility', 'visible');
+      const box = svg.getBoundingClientRect();
+      showTip(g.title(slot), values, g.note(slot, values), at || { x: box.left + x, y: box.top + g.top });
+    }
+    function hide() { cur = -1; layer.setAttribute('visibility', 'hidden'); hideTip(); }
+    const slotAt = (clientX) => {
+      const px = clientX - svg.getBoundingClientRect().left;
+      return clamp(Math.floor(((px - g.left) / g.width) * g.slots), 0, g.slots - 1);
+    };
+    hit.addEventListener('pointermove', (ev) => show(slotAt(ev.clientX), { x: ev.clientX, y: ev.clientY }));
+    hit.addEventListener('pointerleave', hide);
+    svg.addEventListener('keydown', (ev) => {
+      let next = null;
+      const step = ev.shiftKey ? g.bigStep : 1;
+      if (ev.key === 'ArrowRight') next = cur < 0 ? 0 : cur + step;
+      else if (ev.key === 'ArrowLeft') next = cur < 0 ? g.slots - 1 : cur - step;
+      else if (ev.key === 'Home') next = 0;
+      else if (ev.key === 'End') next = g.slots - 1;
+      else if (ev.key === 'Escape') { hide(); return; }
+      if (next === null) return;
+      ev.preventDefault();
+      show(clamp(next, 0, g.slots - 1));
+    });
+    svg.addEventListener('focus', () => show(cur >= 0 ? cur : g.slots - 1));
+    svg.addEventListener('blur', hide);
+  }
+
+  function chartWidth(host) { return Math.max(280, Math.floor(host.clientWidth)); }
+  function margins(W) { return { l: 50, r: W < 560 ? 14 : 84, t: 24, b: 26 }; }
+
+  // ---------- 시간별 그래프 ----------
+  function renderMain() {
+    const user = DATA.users[state.u], p = prepare(user);
+    const host = $('main-chart');
+    host.textContent = '';
+    const W = chartWidth(host), H = W < 560 ? 250 : 320, m = margins(W);
+    const pw = W - m.l - m.r, top = m.t, bottom = H - m.b;
+    const [s, e] = state.view;
+    const daily = (e - s) / 24 > DAILY_AFTER_DAYS;
+    const xOf = (t) => m.l + ((t - s) / (e - s)) * pw;
+
+    const slots = daily ? (e - s) / 24 : e - s;
+    const tOf = (k) => (daily ? (s / 24 + k) * 24 + 12 : s + k + 0.5);
+    const valuesAt = (k) => (daily
+      ? { actual: p.dayAct[s / 24 + k], pred: p.dayPred[s / 24 + k] }
+      : { actual: p.act[s + k], pred: p.pred[s + k] });
+
+    let maxShown = 0;
+    for (let k = 0; k < slots; k++) {
+      const v = valuesAt(k);
+      for (const sr of SERIES) if (state.show[sr.key] && isNum(v[sr.key]) && v[sr.key] > maxShown) maxShown = v[sr.key];
+    }
+    const y = yAxis(p, top, bottom, maxShown);
+    const from = fmtDay(p, s / 24), to = fmtDay(p, e / 24 - 1);
+    const svg = sv('svg', {
+      width: W, height: H, class: 'plot', tabindex: 0, role: 'img',
+      'aria-label': `user ${user.id}의 ${from}부터 ${to}까지 ${daily ? '일 평균' : '시간별'} 실측과 LightGBM 예측 선 그래프. 표로 보기에서 일별 값을 볼 수 있습니다.`,
+    }, host);
+
+    if (s < p.trainEnd) {
+      const x0 = xOf(s), x1 = xOf(Math.min(e, p.trainEnd));
+      sv('rect', { x: x0, y: top, width: x1 - x0, height: bottom - top, class: 'shade' }, svg);
+      if (x1 - x0 > 150) sv('text', { x: x0 + 6, y: top + 14, class: 'shade-label' }, svg, '초기 학습 4주 · 예측 없음');
+    }
+    drawYAxis(svg, y, m, pw);
+    for (const tk of timeTicks(p, s, e, pw)) {
+      const xx = Math.round(xOf(tk.t)) + 0.5;
+      if (xx < m.l - 1 || xx > m.l + pw + 1) continue;
+      sv('line', { x1: xx, x2: xx, y1: top, y2: bottom, class: 'grid-v' }, svg);
+      sv('text', { x: xx, y: bottom + 17, 'text-anchor': 'middle', class: 'tick' }, svg, tk.label);
+    }
+    sv('line', { x1: m.l, x2: m.l + pw, y1: bottom + 0.5, y2: bottom + 0.5, class: 'axis' }, svg);
+
+    const ends = [];
+    for (const sr of SERIES) {
+      if (!state.show[sr.key]) continue;
+      const pts = [];
+      let last = null;
+      for (let k = 0; k < slots; k++) {
+        const v = valuesAt(k)[sr.key];
+        if (isNum(v)) { last = [xOf(tOf(k)), y.map(v)]; pts.push(last); } else pts.push(null);
+      }
+      drawSeries(svg, pts, sr.cls);
+      if (last && W >= 560) ends.push({ y: last[1], label: sr.key === 'actual' ? '실측' : 'LightGBM' });
+    }
+    drawEndLabels(svg, ends, m, pw);
+
+    attachHover(svg, {
+      left: m.l, width: pw, top, bottom, slots,
+      bigStep: daily ? 7 : 24,
+      xAt: (k) => xOf(tOf(k)),
+      yOf: y.map,
+      values: valuesAt,
+      title: (k) => (daily ? `${fmtDay(p, s / 24 + k)} · 일 평균` : `${fmtDay(p, Math.floor((s + k) / 24))} ${pad2((s + k) % 24)}시`),
+      note: (k, v) => {
+        const idx = daily ? (s / 24 + k) * 24 : s + k;
+        const day = daily ? s / 24 + k : Math.floor((s + k) / 24);
+        if (!p.dayN[day]) return idx < p.trainEnd ? '이날 실측 없음' : '이날은 실측이 없어 예측하지 않았습니다';
+        if (!isNum(v.actual)) return '이 시각 실측 없음';
+        if (!isNum(v.pred)) return idx < p.trainEnd ? '초기 학습 구간 (예측 없음)' : '예측 없음 (학습에 쓸 날 부족)';
+        return (daily ? `실측 ${p.dayN[s / 24 + k]}시간 평균 · ` : '') + errorNote(v);
+      },
+    });
+
+    $('main-caption').textContent = `${from} ~ ${to} · ${(e - s) / 24}일 · ${daily ? '일 평균 표시 (45일 초과)' : '시간별 표시'}`;
+  }
+
+  // ---------- 전체 기간 띠 (구간 선택) ----------
+  let overview = null;
+  function buildOverview() {
+    const user = DATA.users[state.u], p = prepare(user);
+    const host = $('overview');
+    host.textContent = '';
+    const W = chartWidth(host), m = margins(W), H = 74;
+    const pw = W - m.l - m.r, top = 6, bottom = H - 20;
+    const xOfH = (t) => m.l + (t / p.n) * pw;
+    const hi = Math.max(p.maxLog * 1.04, Math.log1p(10));
+    const yOf = (v) => bottom - (v / hi) * (bottom - top);
+    const svg = sv('svg', { width: W, height: H, class: 'plot', 'aria-hidden': 'true' }, host);
+
+    if (p.trainEnd > 0) sv('rect', { x: xOfH(0), y: top, width: xOfH(p.trainEnd) - xOfH(0), height: bottom - top, class: 'shade' }, svg);
+    sv('line', { x1: m.l, x2: m.l + pw, y1: bottom + 0.5, y2: bottom + 0.5, class: 'axis' }, svg);
+    for (const tk of timeTicks(p, 0, p.n, pw)) {
+      const xx = xOfH(tk.t);
+      if (xx < m.l || xx > m.l + pw) continue;
+      sv('text', { x: xx, y: bottom + 15, 'text-anchor': 'middle', class: 'tick' }, svg, tk.label);
+    }
+    for (const sr of SERIES) {
+      if (!state.show[sr.key]) continue;
+      const arr = sr.key === 'actual' ? p.dayAct : p.dayPred;
+      const pts = Array.from(arr, (v, d) => (isNum(v) ? [xOfH(d * 24 + 12), yOf(v)] : null));
+      drawSeries(svg, pts, sr.cls, 'ov-line');
+    }
+    sv('rect', { x: m.l, y: top, width: pw, height: bottom - top, fill: 'transparent', class: 'brush-zone' }, svg);
+    const brush = sv('rect', { y: top, height: bottom - top, class: 'brush' }, svg);
+    const handles = [0, 1].map(() => sv('line', { y1: top + 8, y2: bottom - 8, class: 'brush-handle' }, svg));
+    overview = { svg, brush, handles, xOfH, m, pw, p };
+    updateBrush();
+
+    let drag = null;
+    const hourAt = (clientX) => ((clientX - svg.getBoundingClientRect().left - m.l) / pw) * p.n;
+    const snap = (t) => Math.round(t / 24) * 24;
+    svg.addEventListener('pointerdown', (ev) => {
+      const [s, e] = state.view;
+      const px = ev.clientX - svg.getBoundingClientRect().left;
+      const xs = xOfH(s), xe = xOfH(e);
+      let mode = 'move';
+      if (Math.abs(px - xs) <= 9 && px <= (xs + xe) / 2) mode = 'left';
+      else if (Math.abs(px - xe) <= 9) mode = 'right';
+      else if (px < xs || px > xe) {
+        const w = e - s;
+        const ns = clamp(snap(hourAt(ev.clientX) - w / 2), 0, p.n - w);
+        setView(ns, ns + w);
+      }
+      drag = { mode, x0: ev.clientX, view0: state.view.slice() };
+      svg.setPointerCapture(ev.pointerId);
+      ev.preventDefault();
+    });
+    svg.addEventListener('pointermove', (ev) => {
+      if (!drag) return;
+      const dh = ((ev.clientX - drag.x0) / pw) * p.n;
+      const [s, e] = drag.view0;
+      if (drag.mode === 'move') {
+        const ns = clamp(snap(s + dh), 0, p.n - (e - s));
+        setView(ns, ns + (e - s));
+      } else if (drag.mode === 'left') {
+        setView(clamp(snap(s + dh), 0, e - 24), e);
+      } else {
+        setView(s, clamp(snap(e + dh), s + 24, p.n));
+      }
+    });
+    const end = () => { drag = null; };
+    svg.addEventListener('pointerup', end);
+    svg.addEventListener('pointercancel', end);
+  }
+
+  function updateBrush() {
+    if (!overview) return;
+    const [s, e] = state.view;
+    const x0 = overview.xOfH(s), x1 = overview.xOfH(e);
+    const w = Math.max(x1 - x0, 3);
+    overview.brush.setAttribute('x', x0);
+    overview.brush.setAttribute('width', w);
+    overview.handles[0].setAttribute('x1', x0); overview.handles[0].setAttribute('x2', x0);
+    overview.handles[1].setAttribute('x1', x0 + w); overview.handles[1].setAttribute('x2', x0 + w);
+  }
+
+  // ---------- 하루 시간대별 평균 ----------
+  function renderProfile() {
+    const user = DATA.users[state.u], p = prepare(user);
+    const host = $('profile-chart');
+    host.textContent = '';
+    const W = chartWidth(host), H = W < 560 ? 220 : 260, m = margins(W);
+    const pw = W - m.l - m.r, top = m.t, bottom = H - m.b;
+    const [s, e] = state.view;
+    const sum = { actual: new Float64Array(24), pred: new Float64Array(24) };
+    const cnt = new Int32Array(24);
+    for (let i = s; i < e; i++) {
+      const a = p.act[i], q = p.pred[i];
+      if (isNum(a) && isNum(q)) { const h = i % 24; sum.actual[h] += a; sum.pred[h] += q; cnt[h]++; }
+    }
+    const valuesAt = (h) => ({
+      actual: cnt[h] ? sum.actual[h] / cnt[h] : NaN,
+      pred: cnt[h] ? sum.pred[h] / cnt[h] : NaN,
+    });
+    let maxShown = 0;
+    for (let h = 0; h < 24; h++) {
+      const v = valuesAt(h);
+      for (const sr of SERIES) if (state.show[sr.key] && isNum(v[sr.key]) && v[sr.key] > maxShown) maxShown = v[sr.key];
+    }
+    const y = yAxis(p, top, bottom, maxShown);
+    const xOf = (h) => m.l + ((h + 0.5) / 24) * pw;
+    const svg = sv('svg', {
+      width: W, height: H, class: 'plot', tabindex: 0, role: 'img',
+      'aria-label': `user ${user.id}의 선택한 구간 하루 시간대별 평균 실측과 LightGBM 예측`,
+    }, host);
+    drawYAxis(svg, y, m, pw);
+    for (let h = 0; h < 24; h += 3) {
+      sv('text', { x: xOf(h), y: bottom + 17, 'text-anchor': 'middle', class: 'tick' }, svg, `${h}시`);
+    }
+    sv('line', { x1: m.l, x2: m.l + pw, y1: bottom + 0.5, y2: bottom + 0.5, class: 'axis' }, svg);
+
+    const total = cnt.reduce((a, b) => a + b, 0);
+    if (!total) {
+      sv('text', { x: m.l + pw / 2, y: (top + bottom) / 2, 'text-anchor': 'middle', class: 'empty-label' }, svg,
+        '이 구간에는 실측과 예측이 함께 있는 시각이 없습니다');
+      $('profile-caption').textContent = '실측과 예측이 모두 있는 시각만 시간대별로 평균합니다.';
+      return;
+    }
+    const ends = [];
+    for (const sr of SERIES) {
+      if (!state.show[sr.key]) continue;
+      const pts = [];
+      for (let h = 0; h < 24; h++) {
+        const v = valuesAt(h)[sr.key];
+        pts.push(isNum(v) ? [xOf(h), y.map(v)] : null);
+      }
+      drawSeries(svg, pts, sr.cls);
+      for (const pt of pts) if (pt) sv('circle', { cx: pt[0], cy: pt[1], r: 4, class: 'marker ' + sr.cls }, svg);
+      const last = pts.filter(Boolean).pop();
+      if (last && W >= 560) ends.push({ y: last[1], label: sr.key === 'actual' ? '실측' : 'LightGBM' });
+    }
+    drawEndLabels(svg, ends, m, pw);
+    attachHover(svg, {
+      left: m.l, width: pw, top, bottom, slots: 24, bigStep: 6,
+      xAt: xOf, yOf: y.map, values: valuesAt,
+      title: (h) => `${h}시 · ${cnt[h]}일 평균`,
+      note: (h, v) => (cnt[h] ? errorNote(v) : '이 시간대에 평가 시각 없음'),
+    });
+    $('profile-caption').textContent = `실측과 예측이 모두 있는 시각만 시간대별로 평균했습니다 (평가 시각 ${nf.format(total)}개).`;
+  }
+
+  // ---------- 지표·표·상태 ----------
+  function renderSummary() {
+    const user = DATA.users[state.u], p = prepare(user), m = user.metrics;
+    const [s, e] = state.view;
+    const st = windowStats(p, s, e);
+    $('range-title').textContent = `선택한 구간 ${fmtDay(p, s / 24)} ~ ${fmtDay(p, e / 24 - 1)} (${(e - s) / 24}일)`;
+    const tiles = [
+      ['기록 기간', `${nf.format(user.days)}일`, `${user.start} ~ ${fmtDate(dateOf(p, p.D - 1))}`],
+      ['평가 시각', st.n ? `${nf.format(st.n)}시간` : '–', m ? `전체 ${nf.format(m.hours)}시간 · ${nf.format(m.days)}일` : '예측 없음'],
+      ['MAE (log)', st.n ? nf2.format(st.mae) : '–', m ? `전체 평가 기간 ${nf2.format(m.MAE)}` : '예측 없음'],
+      ['RMSE (log)', st.n ? nf2.format(st.rmse) : '–', m ? `전체 평가 기간 ${nf2.format(m.RMSE)}` : '예측 없음'],
+      ['평균 절대오차', st.n ? `${nf.format(Math.round(st.maeLux))} lux` : '–', m ? `전체 평가 기간 ${nf.format(Math.round(m.MAE_lux))} lux` : '예측 없음'],
+    ];
+    const box = $('tiles');
+    box.textContent = '';
+    for (const [label, value, note] of tiles) {
+      const tile = el('div', { class: 'tile' }, box);
+      el('div', { class: 'label' }, tile, label);
+      el('div', { class: 'value' }, tile, value);
+      el('div', { class: 'note' }, tile, note);
+    }
+    let status = '';
+    if (user.status === 'none') status = '이 사용자는 예측이 없어 실측만 표시합니다. 기록 기간이 4주 이하이거나, 4주 이후 관측이 없거나, 학습에 쓸 날이 5일 미만입니다.';
+    else if (user.status === 'few') status = `평가일이 ${m.days}일뿐이라 지표를 믿기 어렵습니다.`;
+    else if (!st.n) status = '선택한 구간에는 실측과 예측이 함께 있는 시각이 없습니다. 기간을 넓히거나 구간을 옮겨 보세요.';
+    $('status').textContent = status;
+  }
+
+  function renderTable() {
+    const wrap = $('table-wrap');
+    if (wrap.hidden) return;
+    const p = prepare(DATA.users[state.u]);
+    const [s, e] = state.view;
+    const body = $('table-body');
+    body.textContent = '';
+    for (let d = s / 24; d < e / 24; d++) {
+      const tr = el('tr', {}, body);
+      el('td', {}, tr, fmtDay(p, d));
+      el('td', {}, tr, p.dayN[d] ? String(p.dayN[d]) : '–');
+      el('td', {}, tr, luxText(p.dayAct[d]));
+      el('td', {}, tr, luxText(p.dayPred[d]));
+      el('td', {}, tr, isNum(p.dayErr[d]) ? p.dayErr[d].toFixed(2) : '–');
+    }
+  }
+
+  function syncControls() {
+    const p = prepare(DATA.users[state.u]);
+    const [s, e] = state.view;
+    for (const btn of $('presets').children) {
+      const days = +btn.dataset.days;
+      const on = days === 0 ? s === 0 && e === p.n : e - s === Math.min(days * 24, p.n) && !(s === 0 && e === p.n && days * 24 > p.n);
+      btn.setAttribute('aria-pressed', String(on));
+    }
+    for (const btn of $('scales').children) btn.setAttribute('aria-pressed', String(btn.dataset.scale === state.scale));
+    $('prev').disabled = s <= 0;
+    $('next').disabled = e >= p.n;
+    document.querySelectorAll('[data-legend] button').forEach((btn) => btn.setAttribute('aria-pressed', String(state.show[btn.dataset.key])));
+  }
+
+  // ---------- 상태 변경 ----------
+  let frame = 0;
+  function renderAll() {
+    frame = 0;
+    hideTip();
+    renderMain();
+    renderProfile();
+    renderSummary();
+    renderTable();
+    updateBrush();
+    syncControls();
+  }
+  function schedule() { if (!frame) frame = requestAnimationFrame(renderAll); }
+  function setView(s, e) {
+    if (s === state.view[0] && e === state.view[1]) return;
+    state.view = [s, e];
+    updateBrush();
+    schedule();
+  }
+  function windowFor(days, end, p) {
+    const len = days === 0 ? p.n : Math.min(days * 24, p.n);
+    const e = clamp(end, len, p.n);
+    return [e - len, e];
+  }
+  function selectUser(idx) {
+    const prevLen = state.view[1] - state.view[0];
+    state.u = idx;
+    const p = prepare(DATA.users[idx]);
+    const len = Math.min(prevLen || 14 * 24, p.n);
+    state.view = [p.n - len, p.n];
+    try { history.replaceState(null, '', '#user=' + encodeURIComponent(DATA.users[idx].id)); } catch (e) { /* 파일 열기에서는 무시 */ }
+    buildOverview();
+    renderAll();
+  }
+
+  // ---------- 컨트롤 ----------
+  function buildControls() {
+    const select = $('user');
+    DATA.users.forEach((u, i) => {
+      const m = u.metrics;
+      const text = u.status === 'none' ? `user ${u.id} · 예측 없음` : `user ${u.id} · 평가 ${m.days}일 · MAE ${nf2.format(m.MAE)}`;
+      el('option', { value: String(i) }, select, text);
+    });
+    select.addEventListener('change', () => selectUser(+select.value));
+
+    for (const [days, label] of PRESETS) {
+      const btn = el('button', { type: 'button', 'data-days': String(days), 'aria-pressed': 'false' }, $('presets'), label);
+      btn.addEventListener('click', () => {
+        const p = prepare(DATA.users[state.u]);
+        const [s, e] = windowFor(days, state.view[1], p);
+        setView(s, e);
+      });
+    }
+    for (const [scale, label] of [['log', '로그 눈금'], ['linear', '선형 눈금']]) {
+      const btn = el('button', { type: 'button', 'data-scale': scale, 'aria-pressed': 'false' }, $('scales'), label);
+      btn.addEventListener('click', () => { state.scale = scale; schedule(); });
+    }
+    $('prev').addEventListener('click', () => {
+      const [s, e] = state.view, w = e - s, ns = Math.max(0, s - w);
+      setView(ns, ns + w);
+    });
+    $('next').addEventListener('click', () => {
+      const p = prepare(DATA.users[state.u]);
+      const [s, e] = state.view, w = e - s, ne = Math.min(p.n, e + w);
+      setView(ne - w, ne);
+    });
+    document.querySelectorAll('[data-legend]').forEach((box) => {
+      for (const s of SERIES) {
+        const btn = el('button', { type: 'button', 'data-key': s.key, 'aria-pressed': 'true' }, box);
+        el('span', { class: 'key ' + s.cls }, btn);
+        el('span', {}, btn, s.label);
+        btn.addEventListener('click', () => {
+          state.show[s.key] = !state.show[s.key];
+          buildOverview();
+          schedule();
+        });
+      }
+    });
+    $('table-toggle').addEventListener('click', () => {
+      const wrap = $('table-wrap');
+      wrap.hidden = !wrap.hidden;
+      $('table-toggle').textContent = wrap.hidden ? '표로 보기' : '표 닫기';
+      $('table-toggle').setAttribute('aria-expanded', String(!wrap.hidden));
+      renderTable();
+    });
+  }
+
+  // ---------- 테마 ----------
+  const themeBtn = $('theme');
+  function effectiveTheme() {
+    const t = document.documentElement.getAttribute('data-theme');
+    if (t) return t;
+    return window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  }
+  function syncTheme() { themeBtn.textContent = effectiveTheme() === 'dark' ? '라이트 모드' : '다크 모드'; }
+  try {
+    const saved = localStorage.getItem('lux-viewer-theme');
+    if (saved === 'light' || saved === 'dark') document.documentElement.setAttribute('data-theme', saved);
+  } catch (e) { /* 저장소를 못 쓰면 시스템 설정을 따른다 */ }
+  themeBtn.addEventListener('click', () => {
+    const next = effectiveTheme() === 'dark' ? 'light' : 'dark';
+    document.documentElement.setAttribute('data-theme', next);
+    try { localStorage.setItem('lux-viewer-theme', next); } catch (e) { /* 무시 */ }
+    syncTheme();
+  });
+  syncTheme();
+
+  // ---------- 시작 ----------
+  $('provenance').textContent = `데이터: ${DATA.source} · 사용자 ${DATA.users.length}명 · 생성일 ${DATA.generated}`;
+  if (!DATA.users.length) {
+    $('status').textContent = '표시할 사용자가 없습니다.';
+    return;
+  }
+  buildControls();
+  const fromHash = decodeURIComponent((location.hash.match(/user=([^&]+)/) || [])[1] || '');
+  let start = DATA.users.findIndex((u) => u.id === fromHash);
+  if (start < 0) start = Math.max(0, DATA.users.findIndex((u) => u.status === 'ok'));
+  $('user').value = String(start);
+  selectUser(start);
+
+  let lastWidth = document.querySelector('.wrap').clientWidth;
+  new ResizeObserver(() => {
+    const w = document.querySelector('.wrap').clientWidth;
+    if (w === lastWidth) return;
+    lastWidth = w;
+    buildOverview();
+    schedule();
+  }).observe(document.querySelector('.wrap'));
+})();
+</script>
+</body>
+</html>

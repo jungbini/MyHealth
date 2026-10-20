@@ -75,6 +75,11 @@ def load_readings(path: str | Path, sheet: str | None = None) -> pd.DataFrame:
         raw = pd.read_excel(path, sheet_name=sheet if sheet is not None else 0)
     else:
         raw = pd.read_csv(path)
+    return readings_from_frame(raw)
+
+
+def readings_from_frame(raw: pd.DataFrame) -> pd.DataFrame:
+    """이미 읽은 표(CSV 또는 엑셀 시트)를 (timestamp, lux)로 바꾼다. 규칙은 load_readings와 같다."""
     if "timestamp" in raw.columns:
         value_col = next((c for c in ("value", "light_value", "lux") if c in raw.columns), None)
         ts_col = "timestamp"

@@ -53,6 +53,21 @@ python light_forecast/lightgbm_model.py predict --data lux.csv --model model.txt
 python light_forecast/lightgbm_model.py evaluate --data lux.csv --out eval.csv
 ```
 
+## 결과 뷰어 (`viewer.py`)
+
+사용자별 LightGBM 예측값과 실측 조도를 한 그래프에 겹쳐 보는 HTML 파일을 만든다. 엑셀의 각 시트에
+`lightgbm_model.py`의 순차 검증을 적용한 결과를 담으며, 외부 라이브러리 없이 브라우저에서 열린다.
+
+```bash
+python light_forecast/viewer.py --xlsx light_all.xlsx --out outputs/viewer/lightgbm_viewer.html
+```
+
+- 사용자 선택, 기간(7·14·30·90일·전체), 로그/선형 눈금, 이전/다음 구간 이동
+- 시간별 실측·예측 겹친 선 그래프(45일 초과 구간은 일 평균), 마우스·키보드 툴팁
+- 전체 기간 띠에서 창을 끌어 구간 선택, 선택 구간의 MAE·RMSE와 하루 시간대별 평균, 일별 표
+- 사용자별 예측은 `--out` 옆 `cache/`에 저장해 재사용한다(`--refresh`로 다시 계산)
+- 결과 HTML에는 개인 건강 데이터가 들어 있으므로 저장소에 올리지 않는다
+
 ## 방법
 
 ### 1. 전처리
